@@ -435,7 +435,7 @@ add_microblock_(ForkId, Txs, #{forks := Forks} = Chain) ->
     #{blocks := Blocks} = F = maps:get(ForkId, Forks),
     #{block := B} = hd(Blocks),
     TopHdr = aec_blocks:to_header(B),
-    PrevHash = aec_headers:prev_hash(TopHdr),
+    {ok, PrevHash} = aec_headers:hash_header(TopHdr),
     ?LOG("PrevHash = ~p", [PrevHash]),
     PrevKeyHash = aec_headers:prev_key_hash(TopHdr),
     Height = aec_headers:height(TopHdr),
@@ -443,25 +443,33 @@ add_microblock_(ForkId, Txs, #{forks := Forks} = Chain) ->
                Height, PrevHash, PrevKeyHash,
                root_hash(), 0, txs_hash(), pof_hash(), 0),
     Block = aec_blocks:new_micro_from_header(NewHdr, Txs, no_fraud),
-    {BlockEntry, Evs} = with_trees(ForkId, Txs, Block, Chain),
+    {BlockEntry, Evs1} = with_trees(ForkId, Txs, Block, Chain),
+    Evs2 = maps:to_list(Evs1),
     ?LOG("Microblock = ~p", [Block]),
     NewFork = F#{blocks => [BlockEntry | Blocks]},
     ?LOG("NewFork(~p): ~p", [ForkId, NewFork]),
     NewForks = Forks#{ForkId => NewFork},
-    NewChain = announce(ForkId, Evs, Chain#{forks => NewForks}),
-    {{ok, Block}, NewChain}.
+    NewChain = announce(ForkId, Evs2, Chain#{forks => NewForks}),
+    #{block := FinalMicroBlock} = BlockEntry,
+    {{ok, FinalMicroBlock}, NewChain}.
 
 clone_micro_on_fork_(Hash, ForkId, #{forks := Forks} = Chain) ->
     #{blocks := Blocks} = maps:get(main, Forks),
-    BlockHash = fun(B) ->
-                        aec_headers:hash_header(aec_blocks:to_header(B))
+    BlockHash = fun(#{block := B}) ->
+                    {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
+                    H
                 end,
     case lists_funfind(Hash, BlockHash, Blocks) of
         false ->
             error({no_such_hash, Hash});
         B ->
-            Txs = aec_blocks:txs(B),
-            add_microblock_(ForkId, Txs, Chain)
+            case aec_blocks:is_key_block(B) of
+                false ->
+                    Txs = aec_blocks:txs(B),
+                    add_microblock_(ForkId, Txs, Chain);
+                true ->
+                    add_microblock_(ForkId, [], Chain)
+            end
     end.
 
 fork_from_hash_(ForkId, Hash, #{ forks   := Forks } = Chain) ->
@@ -486,11 +494,13 @@ fork_switch_(ForkId, #{forks := Forks, mempool := Pool, orphans := Orphans} = Ch
     #{ main   := #{blocks := Blocks} = M
      , ForkId := #{fork_point := ForkPoint, blocks := FBlocks}} = Forks,
     Evict = lists:takewhile(
-              fun(B) ->
-                      H = aec_headers:hash_header(aec_blocks:to_header(B)),
+              fun(#{block := B}) ->
+                      {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
                       H =/= ForkPoint
               end, Blocks),
-    ReturnTxs = lists:flatten([ aec_blocks:txs(B) || B <- lists:reverse(Evict)]),
+    ReturnTxs = lists:flatten([ aec_blocks:txs(B)
+        || #{block := B} <- lists:reverse(Evict),
+        not aec_blocks:is_key_block(B)]),
     ?LOG("Evicting txs: ~p", [ReturnTxs]),
     NewPool = lists:reverse(ReturnTxs) ++ Pool,
     NewForks = maps:remove(ForkId, Forks#{main => M#{blocks => FBlocks}}),
@@ -500,11 +510,11 @@ fork_switch_(ForkId, #{forks := Forks, mempool := Pool, orphans := Orphans} = Ch
     {ok, announce(main, [], NewChain)}.
 
 %% Announce top_changed and tx events
-announce(ForkId, Evs, #{ forks := Forks } = Chain) ->
+announce(ForkId, Events, #{ forks := Forks } = Chain) ->
     #{ ForkId := #{ blocks := [#{ block := TopBlock } | _] = Blocks} } = Forks,
     Height = length(Blocks) + 1,
     Hdr = aec_blocks:to_header(TopBlock),
-    TopHash = aec_headers:hash_header(Hdr),
+    {ok, TopHash} = aec_headers:hash_header(Hdr),
     PrevHash = aec_headers:prev_hash(Hdr),
     Type = aec_headers:type(Hdr),
     Origin = origin(Type),
@@ -513,7 +523,7 @@ announce(ForkId, Evs, #{ forks := Forks } = Chain) ->
             , block_origin => Origin
             , prev_hash    => PrevHash
             , height       => Height },
-    send_tx_events(Evs, Info),
+    send_tx_events(Events, TopHash, Origin),
     case ForkId of
         main ->
             ?LOG("Publishing top_changed, I = ~p", [Info]),
@@ -535,7 +545,7 @@ origin(micro) ->
 new_chain() ->
     Miner = new_keypair(),
     {Gen, Tre} = aec_block_genesis:genesis_block_with_state(),
-    Hash = aec_headers:hash_header(aec_blocks:to_header(Gen)),
+    {ok, Hash} = aec_headers:hash_header(aec_blocks:to_header(Gen)),
     #{ miner     => Miner
      , mempool   => []
      , orphans   => []
@@ -550,8 +560,7 @@ add_keyblock_(ForkId, #{forks := Forks, miner := #{pubkey := Miner}} = Chain) ->
     #{ ForkId := #{blocks := Blocks} = F } = Forks,
     #{block := Block} = hd(Blocks),
     TopHdr = aec_blocks:to_header(Block),
-    PrevHash = aec_headers:prev_hash(TopHdr),
-    PrevKeyHash = aec_headers:prev_key_hash(TopHdr),
+    {ok, PrevHash} = aec_headers:hash_header(TopHdr),
     PrevKeyHash = aec_headers:prev_key_hash(TopHdr),
     Height = aec_headers:height(TopHdr),
     NewHdr = aec_headers:new_key_header(
@@ -562,10 +571,11 @@ add_keyblock_(ForkId, #{forks := Forks, miner := #{pubkey := Miner}} = Chain) ->
     announce(ForkId, [], NewChain),
     {{ok, Block},  NewChain}.
 
-send_tx_events(Evs, Info) ->
-    lists:foreach(
-      fun(Ev) -> ec_events:publish({tx_event, Ev}, Info)
-      end, Evs).
+send_tx_events(Events, Hash, Origin) ->
+    ?LOG("send_tx_events(~p, ~p ~p)", [Events, Hash, Origin]),
+    [aec_events:publish({tx_event, Event}, Info#{ block_hash => Hash
+                                                , block_origin => Origin})
+     || {Event, Info} <- Events].
 
 with_trees(ForkId, Txs, Block, Chain) ->
     Blocks = blocks(ForkId, Chain),
@@ -575,8 +585,8 @@ with_trees(ForkId, Txs, Block, Chain) ->
                 error ->
                     aec_trees:new_without_backend()
             end,
-    {NewTrees, Evs} = update_trees(Txs, Trees),
-    {#{ block => Block, trees => NewTrees }, Evs}.
+    {NewTrees, Evs} = update_trees(Txs, Trees, aec_blocks:height(Block)),
+    {#{ block => aec_blocks:set_root_hash(Block, aec_trees:hash(NewTrees)), trees => NewTrees }, Evs}.
 
 trees(Blocks) ->
     case lists:dropwhile(
@@ -589,9 +599,7 @@ trees(Blocks) ->
             error
     end.
 
-
-update_trees(Txs, Trees) ->
-    Height = 2137, %% FIXME or ensure that it is not important
+update_trees(Txs, Trees, Height) ->
     Env = aetx_env:tx_env(Height),
     {ok, _, [], NewTrees, Evs} = aec_trees:apply_txs_on_state_trees_strict(Txs, Trees, Env),
     {NewTrees, Evs}.
@@ -599,12 +607,14 @@ update_trees(Txs, Trees) ->
 blocks_until_hash(Hash, Blocks) ->
     lists:dropwhile(
       fun(#{block := B}) ->
-              aec_headers:hash_header(aec_blocks:to_header(B)) =/= Hash
+              {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
+              H =/= Hash
       end, Blocks).
 
 top_block_hash_(Chain) ->
     [#{block := B}|_] = blocks(main, Chain),
-    aec_headers:hash_header(aec_blocks:to_header(B)).
+    {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
+    H.
 
 get_block_state_(Hash, Chain) ->
     trees(blocks_until_hash(Hash, blocks(Chain))).
@@ -614,7 +624,8 @@ get_top_state_(Chain) ->
 
 hash_is_in_main_chain_(Hash, TopHash, Chain) ->
     BlockHash = fun(B) ->
-                        aec_headers:hash_header(aec_blocks:to_header(B))
+                        {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
+                        H
                 end,
     case blocks_until_hash(TopHash, blocks(Chain)) of
         [] ->
@@ -670,9 +681,13 @@ search_forks_for_hash_(H, Forks) ->
             Result
     end.
 
-find_common_([Tx|T1], Blocks2) ->
-    H1 = aetx_sign:hash(Tx),
-    case lists_funfind(H1, fun aetx_sign:hash/1, Blocks2) of
+find_common_([Block|T1], Blocks2) ->
+    BlockHash = fun(#{block := B}) ->
+                {ok, H} = aec_headers:hash_header(aec_blocks:to_header(B)),
+                H
+            end,
+    H1 = BlockHash(Block),
+    case lists_funfind(H1, BlockHash, Blocks2) of
         false ->
             find_common_(T1, Blocks2);
         _Found ->
@@ -740,7 +755,7 @@ find_tx_with_location_(Hash, #{forks := Forks, mempool := Pool}) ->
     #{blocks := Blocks} = maps:get(main, Forks),
     case find_signed_tx_in_blocks_(Blocks, Hash) of
         {value, STx, B} ->
-            BlockHash = aec_headers:hash_header(aec_blocks:to_header(B)),
+            {ok, BlockHash} = aec_headers:hash_header(aec_blocks:to_header(B)),
             {BlockHash, STx};
         none ->
             case lists_funfind(Hash, fun aetx_sign:hash/1, Pool) of
