@@ -43,6 +43,10 @@
         , get_balance/2                %% (ForkId, Acct) -> Balance
         , push/1                       %% (Tx) -> ok
         , sign_and_push/2              %% (Acct, Tx) -> ok
+        , get_call/2                   %% (ContractKey, CallKey) -> Call
+        , get_call/3                   %% (ForkId, ContractKey, CallKey) -> Call
+        , get_trees/0                  %% () -> Trees
+        , get_trees/1                  %% (ForkId) -> {ok, Trees} | error
         , add_keyblock/0               %% () -> {ok, Block}
         , add_keyblock/1               %% (ForkId) -> {ok, Block}
         , add_microblock/0             %% () -> {ok, Block}
@@ -165,6 +169,34 @@ push(Tx) ->
 %%
 sign_and_push(Account, Tx) ->
     chain_req({sign_and_push, Account, Tx}).
+
+-spec get_call(Contract :: aect_contracts:id(), Call :: aect_call:id()) -> aect_call:call().
+%%
+%% Equivalent to get_call(main, Contract, Call)
+%%
+get_call(Contract, Call) ->
+    get_call(main, Contract, Call).
+
+-spec get_call(ForkId :: fork_id(), Contract :: aect_contracts:id(), Call :: aect_call:id()) -> aect_call:call().
+%%
+%% Equivalent to get_call(main, Contract, Call)
+%%
+get_call(ForkId, Contract, Call) ->
+    chain_req({get_call, ForkId, Contract, Call}).
+
+-spec get_trees() -> {ok, aec_trees:trees()} | error.
+%%
+%% Equivalent to get_trees(main)
+%%
+get_trees() ->
+    get_trees(main).
+
+-spec get_trees(fork_id()) -> {ok, aec_trees:trees()} | error.
+%%
+%% Returns state trees from the top of a given fork
+%%
+get_trees(ForkId) ->
+    chain_req({get_trees, ForkId}).
 
 -spec add_keyblock() -> aec_blocks:key_block().
 %%
@@ -348,6 +380,11 @@ handle_call( {sign_and_push, PK, Tx}, _From
             {reply, ok, St#st{chain = Chain#{mempool => [aec_test_utils:sign_tx(Tx, SK)|Pool]}}};
         _ -> {reply, {error, unknown_privkey}, Chain}
     end;
+handle_call({get_call, ForkId, ContractId, CallId}, _From, #st{chain = Chain} = St) ->
+    {reply, get_call_(ForkId, ContractId, CallId, Chain), St};
+handle_call({get_trees, ForkId}, _From, #st{chain = Chain} = St) ->
+    #{forks := #{ ForkId := #{blocks := Blocks}}} = Chain,
+    {reply, trees(Blocks), St};
 handle_call({next_nonce, Acct}, _From, #st{chain = #{nonces := Nonces} = Chain} = St) ->
     N = maps:get(Acct, Nonces, 0),
     NewN = N + 1,
@@ -598,6 +635,12 @@ update_trees(Txs, Trees, Height) ->
     Env = aetx_env:tx_env(Height),
     {ok, _, [], NewTrees, Evs} = aec_trees:apply_txs_on_state_trees_strict(Txs, Trees, Env),
     {NewTrees, Evs}.
+
+get_call_(ForkId, ContractId, CallId, #{forks := Forks}) ->
+    #{ ForkId := #{blocks := Blocks}} = Forks,
+    {ok, Trees} = trees(Blocks),
+    Calls = aec_trees:calls(Trees),
+    aect_call_state_tree:get_call(ContractId, CallId, Calls).
 
 blocks_until_hash(Hash, Blocks) ->
     lists:dropwhile(

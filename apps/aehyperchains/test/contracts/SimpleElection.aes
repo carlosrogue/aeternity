@@ -148,7 +148,7 @@ payable contract SimpleElection =
   /**
    * Get total of staked tokens of a delegate
    */
-  function
+  entrypoint
     staked_tokens : delegate => tokens 
     staked_tokens(address) =
       List.sum([s.value | s <- state.stakes[address = []]])
@@ -157,7 +157,7 @@ payable contract SimpleElection =
   /**
    * Get total number of tokens that a delegate requested to thaw
    */
-  function
+  entrypoint
     requested_withdrawals : delegate => tokens 
     requested_withdrawals(address) =
       List.sum([w.value | w <- state.withdraw_requests[address = []]])
@@ -167,7 +167,7 @@ payable contract SimpleElection =
    * Get the amount of the stake that is already retracted by 
    * withdrawal requests 
    */
-  function
+  entrypoint
     retracted_stake : delegate => tokens
     retracted_stake(address) =
       List.sum([ w.value 
@@ -301,9 +301,21 @@ payable contract SimpleElection =
         last_election = Some({leader = addr, height = Chain.block_height})})
 
 
+  /**
+   * Returns the leader of the upcoming generation without
+   * performing the election
+   */
+  entrypoint
+    get_computed_leader : () => option(delegate)
+    get_computed_leader() =
+      switch(state.last_election)
+        None     => None
+        Some(le) =>
+          if(Chain.block_height != le.height) None
+          else Some(le.leader)
 
-  /*** INTERFACE ***/
 
+  /*** STAKERS' ACTIONS ***/
 
   /**
    * Freezes tokens to be counted as stake
@@ -353,22 +365,10 @@ payable contract SimpleElection =
       total_value
 
 
-  /**
-   * Returns the leader of the upcoming generation without 
-   * performing the election
-   */
-  entrypoint 
-    get_computed_leader : () => option(delegate)
-    get_computed_leader() =
-      switch(state.last_election)
-        None     => None 
-        Some(le) =>
-          if(Chain.block_height != le.height) None 
-          else Some(le.leader)
-
+  /*** RESTRICTED ACTIONS ***/
 
   /**
-   * Restricted. Performs the leader election.
+   * Performs the leader election.
    */
   stateful entrypoint
     get_leader : (list(delegate), hash) => delegate
@@ -388,7 +388,7 @@ payable contract SimpleElection =
 
 
   /**
-   * Restricted. Vanishes the staked funds of the user in case of fraud
+   * Vanishes the staked funds of the user in case of a fraud
    */
   stateful entrypoint
     punish : delegate => unit
