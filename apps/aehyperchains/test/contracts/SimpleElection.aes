@@ -196,14 +196,14 @@ payable contract SimpleElection =
   
 
   /**
-   * Drops the least aged tokens from the stake entries
+   * Drops the least valuable tokens from the stake entries
    */
   function
     decrease_stake : (list(stake), tokens) => list(stake)
     decrease_stake(stakes, value) =
       run_decrease_stake(
         List.sort(
-          (s1, s2) => s1.created > s2.created,
+          (s1, s2) => valuate(s1) < valuate(s2),
           state.stakes[Call.origin = []]),
         value)
 
@@ -380,7 +380,10 @@ payable contract SimpleElection =
         None => 
           let candidates = get_candidates(delegates)
           switch (elect_candidate(candidates, rand))
-            None => abort("NO_CANDIDATE")
+            // if the election fails then pick the previous one
+            None => switch(state.last_election)
+              None => abort("NO_CANDIDATE")
+              Some(le) => le.leader
             Some(leader) =>
               reset_stake_age(leader)
               set_leader(leader)

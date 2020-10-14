@@ -203,7 +203,9 @@ get_trees(ForkId) ->
 %% Equivalent to add_keyblock(main)
 %%
 add_keyblock() ->
-    add_keyblock(main).
+    {Time, _} = timer:tc(fun() ->
+                                 add_keyblock(main),
+                                 ok end), io:format("\n\n\nKURWA ~p \n\n\n\n", [Time]).
 
 -spec add_keyblock( ForkId :: fork_id() ) -> {ok, aec_blocks:key_block()}.
 %%
@@ -578,13 +580,16 @@ new_chain() ->
     Miner = new_keypair(),
     {Gen, Tre} = aec_block_genesis:genesis_block_with_state(),
     {ok, Hash} = aec_headers:hash_header(aec_blocks:to_header(Gen)),
-    #{ miner     => Miner
-     , mempool   => []
-     , orphans   => []
-     , nonces    => #{}
-     , key_pairs => #{}
-     , forks     => #{ main => #{ fork_point => Hash
-                                , blocks     => [#{block => Gen, trees => Tre}] } }}.
+    Chain0 =
+        #{ miner     => Miner
+        ,  mempool   => []
+        ,  orphans   => []
+        ,  nonces    => #{}
+        ,  key_pairs => #{}
+        ,  forks     => #{ main => #{ fork_point => Hash
+                                   ,  blocks     => [#{block => Gen, trees => Tre}] } }},
+    {_, Chain1} = add_keyblock_(main, Chain0),
+    Chain1.
 
 %% Called from the chain process
 add_keyblock_(ForkId, #{forks := Forks, miner := #{pubkey := Miner}} = Chain) ->
