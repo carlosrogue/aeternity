@@ -44,7 +44,16 @@ unmock_protocol() ->
 
 staking_contract_scenarios_test_() ->
     [{foreach, fun setup/0, fun unsetup/1,
-      [ {"Simple deposit/withdraw scenario", fun test_deposit/0}
+      [ {"Unit fun protocol_restrict", fun test_fun_protocol_restrict/0}
+      , {"Unit fun valuate", fun test_fun_valuate/0}
+      , {"Unit fun staked_tokens", fun test_fun_staked_tokens/0}
+      , {"Unit fun requested_withdrawals", fun test_fun_requested_withdrawals/0}
+      , {"Unit fun retracted_stake", fun test_fun_retracted_stake/0}
+      , {"Unit fun extract_ripe_withdrawals", fun test_fun_extract_ripe_withdrawals/0}
+      , {"Unit fun decrease_stake", fun test_fun_decrease_stake/0}
+      , {"Unit fun punish", fun test_fun_punish/0}
+      , {"Simple deposit/withdraw scenario", fun test_deposit_withdraw/0}
+      , {"Complex deposit/withdraw scenario", fun test_complex_deposit_withdraw/0}
       ]}].
 
 
@@ -222,7 +231,7 @@ get_computed_leader() ->
     call_staking_contract(get_computed_leader, [], word).
 
 get_leader(Delegates, Rand) ->
-    call_staking_contract(get_leader, [Delegates, Rand], word). %% FIXME
+    call_staking_contract(get_leader, [Delegates, Rand], word).
 
 punish(BadGuy) ->
     call_staking_contract(punish, [BadGuy], {tuple, []}).
@@ -244,13 +253,13 @@ add_keyblock(Delegates) ->
 %% TESTS
 %%
 
--define(TOKENS(X), X * 1000000 * ?CALL_COST).
--define(assertTokensEqual(B1, B2), ?assert(abs((B1) - (B2)) < ?TOKENS(1)/2)).
--define(assertAbort(X, MSG), ?assertEqual(X, {revert, atom_to_list(MSG)})).
+-define(assertAbort(X, MSG), ?assertEqual(X, {revert, atom_to_list(MSG)})). % FIXME
+-define(assertNegBalance(ACCT, BALANCE), ?assertEqual(?ALOT - BALANCE, get_balance(ACCT))).
+-define(assertStakedTokens(ACCT, TOKENS), ?assertEqual(TOKENS, staked_tokens(ACCT))).
+-define(assertRequestedWithdrawals(ACCT, TOKENS), ?assertEqual(TOKENS, requested_withdrawals(ACCT))).
+-define(assertRetractedStake(ACCT, TOKENS), ?assertEqual(TOKENS, retracted_stake(ACCT))).
 
-
-
--define(INIT_SCENARIO(DD, SRD, WD, ACCS, BALANCES),
+-define(INIT_SCENARIO(DD, SRD, WD, ACCS),
         begin
             create_staking_contract(#{ deposit_delay => 1
                                     ,  stake_retraction_delay => 1
@@ -259,8 +268,14 @@ add_keyblock(Delegates) ->
             add_microblock(),
             add_keyblock([restricted_account()]),
 
-            ACCS = [new_account(?TOKENS(B)) || B <- BALANCES]
+            HackAccs =
+                fun Go(ACCS) ->
+                        [new_account(?ALOT) || _ <- ACCS];
+                    Go(Base) -> Go([{}|Base])
+                end,
+            ACCS = HackAccs([])
         end).
+
 
 test_fun_protocol_restrict() ->
     R1 = call_staking_contract(restricted_account(), 0, protocol_restrict, [], {tuple, []}),
@@ -270,7 +285,7 @@ test_fun_protocol_restrict() ->
     ?assertAbort(R2, 'PROTOCOL_RESTRICTED').
 
 test_fun_valuate() ->
-    ?INIT_SCENARIO(0, 0, 0, [], []),
+    ?INIT_SCENARIO(0, 0, 0, []),
 
     %% Just to ensure that aging does not lower the value
     R1 = call_staking_contract(restricted_account(), 0,
@@ -283,100 +298,100 @@ test_fun_valuate() ->
     ?assert(R3 < R2).
 
 test_fun_staked_tokens() ->
-    ?INIT_SCENARIO(0, 0, 0, [Acct1, Acct2, Acct3], [10000, 10000, 10000]),
+    ?INIT_SCENARIO(0, 0, 0, [Acct1, Acct2, Acct3]),
 
     deposit_stake(Acct1, 10),
-    ?assertTokensEqual(  10, staked_tokens(Acct1)),
-    ?assertTokensEqual(   0, staked_tokens(Acct2)),
-    ?assertTokensEqual(   0, staked_tokens(Acct3)),
+    ?assertStakedTokens(Acct1, 10),
+    ?assertStakedTokens(Acct2, 0),
+    ?assertStakedTokens(Acct3, 0),
     deposit_stake(Acct2, 100),
-    ?assertTokensEqual(  10, staked_tokens(Acct1)),
-    ?assertTokensEqual( 100, staked_tokens(Acct2)),
-    ?assertTokensEqual(   0, staked_tokens(Acct3)),
+    ?assertStakedTokens(Acct1, 10),
+    ?assertStakedTokens(Acct2, 100),
+    ?assertStakedTokens(Acct3, 0),
     deposit_stake(Acct3, 1000),
-    ?assertTokensEqual(  10, staked_tokens(Acct1)),
-    ?assertTokensEqual( 100, staked_tokens(Acct2)),
-    ?assertTokensEqual(1000, staked_tokens(Acct3)),
+    ?assertStakedTokens(Acct1, 10),
+    ?assertStakedTokens(Acct2, 100),
+    ?assertStakedTokens(Acct3, 1000),
     deposit_stake(Acct3, 20),
-    ?assertTokensEqual(  10, staked_tokens(Acct1)),
-    ?assertTokensEqual( 100, staked_tokens(Acct2)),
-    ?assertTokensEqual(1020, staked_tokens(Acct3)),
+    ?assertStakedTokens(Acct1, 10),
+    ?assertStakedTokens(Acct2, 100),
+    ?assertStakedTokens(Acct3, 1020),
     deposit_stake(Acct2, 200),
-    ?assertTokensEqual(  10, staked_tokens(Acct1)),
-    ?assertTokensEqual( 300, staked_tokens(Acct2)),
-    ?assertTokensEqual(1020, staked_tokens(Acct3)),
+    ?assertStakedTokens(Acct1, 10),
+    ?assertStakedTokens(Acct2, 300),
+    ?assertStakedTokens(Acct3, 1020),
     deposit_stake(Acct1, 2000),
-    ?assertTokensEqual(2010, staked_tokens(Acct1)),
-    ?assertTokensEqual( 300, staked_tokens(Acct2)),
-    ?assertTokensEqual(1020, staked_tokens(Acct3)),
+    ?assertStakedTokens(Acct1, 2010),
+    ?assertStakedTokens(Acct2, 300),
+    ?assertStakedTokens(Acct3, 1020),
 
     request_withdraw(Acct2, 150),
     withdraw(Acct2),
-    ?assertTokensEqual( 150, staked_tokens(Acct2)).
+    ?assertStakedTokens(Acct2, 150).
 
 
 test_fun_requested_withdrawals() ->
-    ?INIT_SCENARIO(0, 0, 0, [Acct1, Acct2], [10000, 10000]),
+    ?INIT_SCENARIO(0, 0, 0, [Acct1, Acct2]),
 
     deposit_stake(Acct1, 1000),
     deposit_stake(Acct2, 1000),
 
     request_withdraw(Acct1, 100),
-    ?assertTokensEqual(100, requested_withdrawals(Acct1)),
-    ?assertTokensEqual(  0, requested_withdrawals(Acct2)),
+    ?assertRequestedWithdrawals(Acct1, 100),
+    ?assertRequestedWithdrawals(Acct2, 0),
     request_withdraw(Acct2, 10),
-    ?assertTokensEqual(100, requested_withdrawals(Acct1)),
-    ?assertTokensEqual( 10, requested_withdrawals(Acct2)),
+    ?assertRequestedWithdrawals(Acct1, 100),
+    ?assertRequestedWithdrawals(Acct2, 10),
     request_withdraw(Acct2, 2),
-    ?assertTokensEqual(100, requested_withdrawals(Acct1)),
-    ?assertTokensEqual( 12, requested_withdrawals(Acct2)),
+    ?assertRequestedWithdrawals(Acct1, 100),
+    ?assertRequestedWithdrawals(Acct2, 12),
     request_withdraw(Acct1, 20),
-    ?assertTokensEqual(120, requested_withdrawals(Acct1)),
-    ?assertTokensEqual( 12, requested_withdrawals(Acct2)),
+    ?assertRequestedWithdrawals(Acct1, 120),
+    ?assertRequestedWithdrawals(Acct2, 12),
     withdraw(Acct1),
-    ?assertTokensEqual(  0, requested_withdrawals(Acct1)),
-    ?assertTokensEqual( 12, requested_withdrawals(Acct2)),
+    ?assertRequestedWithdrawals(Acct1, 0),
+    ?assertRequestedWithdrawals(Acct2, 12),
     withdraw(Acct2),
-    ?assertTokensEqual(  0, requested_withdrawals(Acct1)),
-    ?assertTokensEqual(  0, requested_withdrawals(Acct2)).
+    ?assertRequestedWithdrawals(Acct1, 0),
+    ?assertRequestedWithdrawals(Acct2, 0).
 
 
 test_fun_retracted_stake() ->
-    ?INIT_SCENARIO(0, 2, 2, [Acct1, Acct2], [10000, 10000]),
+    ?INIT_SCENARIO(0, 2, 2, [Acct1, Acct2]),
 
     deposit_stake(Acct1, 1000),
     deposit_stake(Acct2, 100),
 
-    ?assertTokensEqual(  0, retracted_stake(Acct1)),
-    ?assertTokensEqual(  0, retracted_stake(Acct2)),
+    ?assertRetractedStake(Acct1, 0),
+    ?assertRetractedStake(Acct2, 0),
 
     request_withdraw(Acct1, 100),
     request_withdraw(Acct2, 10),
 
-    ?assertTokensEqual(  0, retracted_stake(Acct1)),
-    ?assertTokensEqual(  0, retracted_stake(Acct2)),
+    ?assertRetractedStake(Acct1, 0),
+    ?assertRetractedStake(Acct2, 0),
 
     add_keyblock(),
 
     request_withdraw(Acct1, 20),
     request_withdraw(Acct2, 2),
 
-    ?assertTokensEqual(  0, retracted_stake(Acct1)),
-    ?assertTokensEqual(  0, retracted_stake(Acct2)),
+    ?assertRetractedStake(Acct1, 0),
+    ?assertRetractedStake(Acct2, 0),
 
     add_keyblock(),
 
-    ?assertTokensEqual(100, retracted_stake(Acct1)),
-    ?assertTokensEqual( 10, retracted_stake(Acct2)),
+    ?assertRetractedStake(Acct1, 100),
+    ?assertRetractedStake(Acct2, 10),
 
     add_keyblock(),
 
-    ?assertTokensEqual(120, retracted_stake(Acct1)),
-    ?assertTokensEqual( 20, retracted_stake(Acct2)).
+    ?assertRetractedStake(Acct1, 120),
+    ?assertRetractedStake(Acct2, 20).
 
 
 test_fun_extract_ripe_withdrawals() ->
-    ?INIT_SCENARIO(0, 0, 0, [], []),
+    ?INIT_SCENARIO(0, 0, 0, []),
 
     [add_keyblock() || _ <- [1,2,3,4,5,6,7,8,9,0]],
     % Height should be around 10
@@ -397,10 +412,10 @@ test_fun_extract_ripe_withdrawals() ->
                             restricted_account(), 0,
                             extract_ripe_withdrawals, [Withdrawals], word),
                 ResValues = lists:sort([V || #{value := V} <- ResWithdrawals]),
-                ?assertTokensEqual(lists:sum(ValueSeq) - lists:sum(ResValues), T),
-                ?assertTokensEqual(lists:sum(ExpWithdrawalValues), T),
+                ?assertEqual(lists:sum(ValueSeq) - lists:sum(ResValues), T),
+                ?assertEqual(lists:sum(ExpWithdrawalValues), T),
 
-                [ ?assertTokensEqual(L, R)
+                [ ?assertEqual(L, R)
                  || {L, R} <- lists:zip(lists:sort(ExpWithdrawalValues), ResValues)
                 ]
         end,
@@ -414,7 +429,7 @@ test_fun_extract_ripe_withdrawals() ->
     ok.
 
 
-test_decrease_stake() ->
+test_fun_decrease_stake() ->
     S = fun(Value, Created) -> #{value => Value, created => Created} end,
     Test =
         fun(Stakes, Tokens, ExpStakes) ->
@@ -426,6 +441,8 @@ test_decrease_stake() ->
                 ]
         end,
 
+    % Assuming that aging has not negative effect on the value
+    % TODO quickcheck?
     Test(
       [S(1, 2), S(3, 5), S(1, 0)],
       0,
@@ -452,48 +469,100 @@ test_decrease_stake() ->
     ok.
 
 
-test_deposit() ->
-    ?INIT_SCENARIO(1, 1, 2, [Acct], [100]),
+test_fun_punish() ->
+    ?INIT_SCENARIO(1, 1, 2, [Acct]),
 
-    deposit_stake(Acct, ?TOKENS(10)),
-    add_microblock(),
-    ?assertEqual(?TOKENS(10), staked_tokens(Acct)),
-    ?assertTokensEqual(get_balance(Acct), ?TOKENS(90)),
-
-    request_withdraw(Acct, ?TOKENS(5)),
-    add_microblock(),
-
-    add_keyblock([restricted_account()]),
-
-    withdraw(Acct),
-    ?assertEqual(?TOKENS(10), staked_tokens(Acct)),
-    error(kurwa),
-    ?assertEqual(?TOKENS(10), requested_withdrawals(Acct)),
-    ?assertEqual(?TOKENS(0), retracted_stake(Acct)),
-    ?assertTokensEqual(get_balance(Acct), ?TOKENS(90)),
-
-    add_keyblock([restricted_account()]),
-
-    withdraw(Acct),
-    ?assertEqual(?TOKENS(5), staked_tokens(Acct)),
-    ?assertEqual(?TOKENS(0), requested_withdrawals(Acct)),
-    ?assertEqual(?TOKENS(0), retracted_stake(Acct)),
-    ?assertTokensEqual(get_balance(Acct), ?TOKENS(95)),
-
-    ok.
-
-test_punish() ->
-    ?INIT_SCENARIO(1, 1, 2, [Acct], [100]),
-
-    deposit_stake(Acct, ?TOKENS(10)),
-    request_withdraw(Acct, ?TOKENS(5)),
+    deposit_stake(Acct, 10),
+    request_withdraw(Acct, 5),
     add_microblock(),
 
     punish(Acct),
     add_microblock(),
 
-    ?assertEqual(0, staked_tokens(Acct)),
-    ?assertEqual(0, requested_withdrawals(Acct)),
-    ?assertEqual(0, retracted_stake(Acct)).
+    ?assertStakedTokens(Acct, 0),
+    ?assertRequestedWithdrawals(Acct, 0),
+    ?assertRetractedStake(Acct, 0).
 
+
+test_deposit_withdraw() ->
+    ?INIT_SCENARIO(1, 1, 2, [Acct]),
+
+    deposit_stake(Acct, 10),
+    ?assertStakedTokens(Acct, 10),
+    ?assertNegBalance(Acct, 10),
+
+    request_withdraw(Acct, 5),
+
+    add_keyblock(),
+
+    withdraw(Acct),
+    ?assertStakedTokens(Acct, 10),
+    ?assertRequestedWithdrawals(Acct, 10),
+    ?assertRetractedStake(Acct, 0),
+    ?assertNegBalance(Acct, 10),
+
+    add_keyblock(),
+
+    withdraw(Acct),
+    ?assertStakedTokens(Acct, 5),
+    ?assertRequestedWithdrawals(Acct, 0),
+    ?assertRetractedStake(Acct, 0),
+    ?assertNegBalance(Acct, 5),
+
+    ok.
+
+
+test_complex_deposit_withdraw() ->
+    ?INIT_SCENARIO(2, 2, 4, [A1, A2, A3]),
+
+    deposit_stake(A1, 1000),
+    deposit_stake(A2, 500),
+    deposit_stake(A1, 1000),
+    deposit_stake(A3, 10),
+    deposit_stake(A2, 50),
+    request_withdraw(A3, 5),
+
+    ?assertStakedTokens(A1, 2000),
+    ?assertStakedTokens(A2, 550),
+    ?assertStakedTokens(A3, 5),
+    ?assertNegBalance(A3, 40),
+
+    add_keyblock(),
+
+    deposit_stake(A1, 1000),
+    request_withdraw(A1, 500),
+    deposit_stake(A2, 450),
+    withdraw(A3),
+
+    ?assertNegBalance(A3, 40),
+
+    ?assertStakedTokens(A1, 2500),
+    ?assertStakedTokens(A2, 1000),
+    ?assertStakedTokens(A3, 5),
+
+    ?assertRequestedWithdrawals(A1, 500),
+    ?assertRequestedWithdrawals(A2, 0),
+    ?assertRequestedWithdrawals(A3, 5),
+
+    add_keyblock(),
+
+    withdraw(A1),
+    request_withdraw(A2, 1000),
+    withdraw(A2),
+    withdraw(A3),
+    ?assertNegBalance(A1, 3000),
+    ?assertNegBalance(A2, 1000),
+    ?assertNegBalance(A3, 45),
+
+    request_withdraw(A1, 3000),
+    request_withdraw(A3, 45),
+
+    add_keyblock(),
+    add_keyblock(),
+    add_keyblock(),
+
+    ?assertNegBalance(A1, 0),
+    ?assertNegBalance(A2, 0),
+    ?assertNegBalance(A3, 0),
+    ok.
 
